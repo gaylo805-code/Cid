@@ -97,9 +97,10 @@ label{font-size:0.85em;color:#8892b0}
   <div class="form-row">
     <div>
       <label>Giọng đọc</label>
-      <select id="voiceSelect">
+      <select id="voiceSelect" onchange="toggleVoiceSample()">
         <option value="female">Nữ (HoaiMy)</option>
         <option value="male">Nam (NamMinh)</option>
+        <option value="clone">🎙️ Nhân bản giọng từ file mẫu...</option>
       </select>
     </div>
     <div>
@@ -111,6 +112,15 @@ label{font-size:0.85em;color:#8892b0}
         <option value="medium">medium (chính xác hơn, chậm)</option>
       </select>
     </div>
+  </div>
+
+  <div id="voiceSampleBox" style="display:none;margin-top:15px;padding:15px;background:rgba(124,77,255,0.08);border:1px solid #7c4dff;border-radius:10px">
+    <label>File mẫu giọng nói (~10-30 giây, .mp3/.wav, giọng rõ ràng ít nhiễu)</label>
+    <input type="file" id="voiceSampleInput" accept=".mp3,.wav,.m4a" style="margin-top:8px">
+    <p style="color:#ffd740;font-size:0.8em;margin-top:10px">
+      ⚠️ Chỉ nhân bản giọng của <b>chính bạn</b> hoặc người đã <b>đồng ý</b> cho phép.
+      Không dùng để giả mạo người khác — hành vi này có thể vi phạm pháp luật.
+    </p>
   </div>
 
   <button class="btn btn-primary" id="uploadBtn" onclick="uploadVideo()" style="margin-top:15px" disabled>
@@ -181,19 +191,38 @@ function formatSize(bytes) {
   return (bytes/(1024*1024)).toFixed(1) + ' MB';
 }
 
+function toggleVoiceSample() {
+  const isClone = document.getElementById('voiceSelect').value === 'clone';
+  document.getElementById('voiceSampleBox').style.display = isClone ? 'block' : 'none';
+}
+
 async function uploadVideo() {
   if (!selectedFile) return;
+
+  const voiceChoice = document.getElementById('voiceSelect').value;
+  const isClone = voiceChoice === 'clone';
+  const sampleInput = document.getElementById('voiceSampleInput');
+
+  if (isClone && (!sampleInput.files || !sampleInput.files.length)) {
+    showToast('Vui lòng chọn file mẫu giọng nói trước khi tiếp tục', 'error');
+    return;
+  }
+
   uploadBtn.disabled = true;
   uploadBtn.textContent = '⏳ Đang upload...';
 
   const formData = new FormData();
   formData.append('file', selectedFile);
+  if (isClone) {
+    formData.append('voice_sample', sampleInput.files[0]);
+  }
 
   try {
     const res = await apiFetch('/upload', {
       method: 'POST',
       headers: {
-        'X-Voice': document.getElementById('voiceSelect').value,
+        // Khi nhân bản giọng, X-Voice không dùng tới nhưng vẫn gửi giá trị hợp lệ mặc định
+        'X-Voice': isClone ? 'female' : voiceChoice,
         'X-Model': document.getElementById('modelSelect').value,
       },
       body: formData,
@@ -228,7 +257,7 @@ async function refreshJobs() {
   list.innerHTML = jobs.map(j => `
     <div class="job-item ${j.status}" id="job-${j.job_id}">
       <div class="top">
-        <span class="name">🎬 ${j.input_name}</span>
+        <span class="name">🎬 ${j.input_name} ${j.voice_cloning ? '<span style="color:#7c4dff">🎙️ nhân bản giọng</span>' : ''}</span>
         <span class="job-status ${j.status}">${statusLabel[j.status] || j.status}</span>
       </div>
       <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">

@@ -40,8 +40,8 @@ jobs:
           python3 -m pip install --upgrade pip -q
           pip install --break-system-packages -q \
             openai-whisper edge-tts transformers pydub torch \
-            sentencepiece sacremoses
-          echo "✅ Đã cài xong dependencies"
+            sentencepiece sacremoses coqui-tts
+          echo "✅ Đã cài xong dependencies (kèm coqui-tts cho tính năng nhân bản giọng)"
 
       - name: 📦 Cài Cloudflared
         run: |

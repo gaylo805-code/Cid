@@ -255,25 +255,66 @@ def translate_text(segments: List[Dict], src_lang: str, target_lang: str = "vi")
 # BƯỚC 4 — TẠO GIỌNG AI TIẾNG VIỆT (MICROSOFT EDGE TTS)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def generate_tts(segments: List[Dict], temp_dir: str, voice: str = "female") -> List[Dict]:
-    """
-    Tạo file âm thanh tiếng Việt cho từng đoạn bằng Microsoft Edge TTS.
+_xtts_model = None  # cache model để không tải lại mỗi lần gọi
 
-    Ưu điểm: miễn phí, không cần GPU, không tải model, giọng tự nhiên.
+
+def _get_xtts_model():
+    """Tải model XTTS-v2 (chỉ 1 lần, dùng lại cho toàn bộ pipeline).
+
+    ⚠️ Model XTTS-v2 dùng giấy phép Coqui Public Model License (CPML) —
+    CHỈ cho phép sử dụng phi thương mại (cá nhân/nghiên cứu/hobby).
+    Xem: https://coqui.ai/cpml
+    """
+    global _xtts_model
+    if _xtts_model is None:
+        # Tự động chấp nhận CPML để không bị treo chờ nhập "y" trên server
+        # không tương tác (điều này KHÔNG thay đổi nội dung giấy phép, chỉ
+        # ghi nhận rằng bạn đã đọc và đồng ý với CPML trước khi model tải).
+        os.environ["COQUI_TOS_AGREED"] = "1"
+        import torch
+        from TTS.api import TTS
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        logger.info(f"  Đang tải model XTTS-v2 trên {device.upper()} (lần đầu sẽ hơi lâu)…")
+        _xtts_model = TTS("tts_models/multilingual/multi-dataset/xtts_v2").to(device)
+    return _xtts_model
+
+
+def generate_tts(
+    segments: List[Dict],
+    temp_dir: str,
+    voice: str = "female",
+    voice_sample: Optional[str] = None,
+) -> List[Dict]:
+    """
+    Tạo file âm thanh tiếng Việt cho từng đoạn.
+
+    - Nếu có `voice_sample` (đường dẫn file audio mẫu ~6-30 giây): dùng XTTS-v2
+      để NHÂN BẢN giọng nói trong file mẫu đó (voice cloning).
+    - Nếu không: dùng Microsoft Edge TTS với giọng có sẵn (nam/nữ).
+
+    ⚠️ Lưu ý trách nhiệm: chỉ nhân bản giọng nói của chính bạn hoặc người đã
+    đồng ý cho phép — không dùng để giả mạo người khác.
+
     Đoạn lỗi sẽ tự động chèn im lặng thay vì làm crash cả pipeline.
     """
-    import edge_tts
     from pydub import AudioSegment as PydubAudio
-
-    voice_name = GIONG_VIET.get(voice, GIONG_VIET["female"])
-    logger.info(f"  Giọng Edge TTS: {voice_name}")
 
     tts_dir = os.path.join(temp_dir, "doan_tts")
     os.makedirs(tts_dir, exist_ok=True)
 
-    async def _synthesize(text: str, mp3_path: str) -> None:
-        communicate = edge_tts.Communicate(text, voice_name)
-        await communicate.save(mp3_path)
+    use_cloning = bool(voice_sample) and os.path.isfile(voice_sample)
+
+    if use_cloning:
+        logger.info(f"  Chế độ: NHÂN BẢN GIỌNG NÓI từ file mẫu: {voice_sample}")
+        xtts = _get_xtts_model()
+    else:
+        import edge_tts
+        voice_name = GIONG_VIET.get(voice, GIONG_VIET["female"])
+        logger.info(f"  Chế độ: giọng Edge TTS có sẵn ({voice_name})")
+
+        async def _synthesize(text: str, mp3_path: str) -> None:
+            communicate = edge_tts.Communicate(text, voice_name)
+            await communicate.save(mp3_path)
 
     result: List[Dict] = []
     total = len(segments)
@@ -284,15 +325,23 @@ def generate_tts(segments: List[Dict], temp_dir: str, voice: str = "female") -> 
             f"{seg['text'][:70]}{'…' if len(seg['text']) > 70 else ''}"
         )
 
-        mp3_path = os.path.join(tts_dir, f"doan_{idx:04d}.mp3")
         wav_path = os.path.join(tts_dir, f"doan_{idx:04d}.wav")
         s = dict(seg)
 
         try:
-            asyncio.run(_synthesize(seg["text"], mp3_path))
-
-            audio = PydubAudio.from_mp3(mp3_path)
-            audio.export(wav_path, format="wav")
+            if use_cloning:
+                xtts.tts_to_file(
+                    text=seg["text"],
+                    speaker_wav=voice_sample,
+                    language="vi",
+                    file_path=wav_path,
+                )
+                audio = PydubAudio.from_wav(wav_path)
+            else:
+                mp3_path = os.path.join(tts_dir, f"doan_{idx:04d}.mp3")
+                asyncio.run(_synthesize(seg["text"], mp3_path))
+                audio = PydubAudio.from_mp3(mp3_path)
+                audio.export(wav_path, format="wav")
 
             s["tts_path"] = wav_path
             s["tts_duration"] = len(audio) / 1000.0
@@ -560,8 +609,9 @@ def preprocess_segments(
 # TIỆN ÍCH — KIỂM TRA DEPENDENCIES
 # ─────────────────────────────────────────────────────────────────────────────
 
-def check_dependencies() -> None:
-    """Kiểm tra FFmpeg và toàn bộ thư viện Python cần thiết."""
+def check_dependencies(need_voice_cloning: bool = False) -> None:
+    """Kiểm tra FFmpeg và toàn bộ thư viện Python cần thiết.
+    Nếu need_voice_cloning=True, kiểm tra thêm package 'TTS' (Coqui, dùng cho XTTS-v2)."""
     if subprocess.run(["ffmpeg", "-version"], capture_output=True).returncode != 0:
         raise RuntimeError(
             "Không tìm thấy FFmpeg.\n"
@@ -577,6 +627,9 @@ def check_dependencies() -> None:
         "sentencepiece": "sentencepiece",
         "sacremoses":    "sacremoses",
     }
+    if need_voice_cloning:
+        required["TTS"] = "coqui-tts"
+
     missing = []
     for module, pip_name in required.items():
         try:
@@ -604,6 +657,7 @@ def run_pipeline(
     model_size: str = "small",
     output_path: Optional[str] = None,
     keep_temp: bool = False,
+    voice_sample: Optional[str] = None,
 ) -> str:
     """Điều phối toàn bộ pipeline lồng tiếng từ đầu đến cuối."""
     wall_start = time.time()
@@ -649,7 +703,7 @@ def run_pipeline(
         _save_json(segments, os.path.join(temp_dir, "ban_dich.json"))
 
         _banner(4, "Tạo giọng AI tiếng Việt")
-        segments = generate_tts(segments, temp_dir, voice=voice)
+        segments = generate_tts(segments, temp_dir, voice=voice, voice_sample=voice_sample)
 
         _banner(5, "Căn chỉnh thời gian từng đoạn")
         aligned_paths: List[str] = []
@@ -710,6 +764,11 @@ Ví dụ:
     parser.add_argument("--target_lang", default="vi", help="Ngôn ngữ đích (mặc định: vi).")
     parser.add_argument("--voice", choices=["female", "male"], default="female", help="Giọng AI.")
     parser.add_argument(
+        "--voice_sample", default=None,
+        help="Đường dẫn file audio mẫu (~6-30s) để NHÂN BẢN giọng nói thay vì dùng giọng có sẵn. "
+             "⚠️ Chỉ dùng giọng của chính bạn hoặc người đã đồng ý.",
+    )
+    parser.add_argument(
         "--model",
         choices=["tiny", "base", "small", "medium", "large"],
         default="small",
@@ -723,7 +782,7 @@ Ví dụ:
 
     if not args.skip_dep_check:
         try:
-            check_dependencies()
+            check_dependencies(need_voice_cloning=bool(args.voice_sample))
         except (RuntimeError, FileNotFoundError) as exc:
             logger.error(f"Kiểm tra dependency thất bại:\n{exc}")
             sys.exit(1)
@@ -736,6 +795,7 @@ Ví dụ:
             model_size=args.model,
             output_path=args.output,
             keep_temp=args.keep_temp,
+            voice_sample=args.voice_sample,
         )
     except FileNotFoundError as exc:
         logger.error(str(exc))

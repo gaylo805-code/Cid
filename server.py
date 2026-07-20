@@ -59,7 +59,7 @@ def safe_filename(name: str) -> str:
     return name or f"file_{int(time.time())}"
 
 
-def run_dubbing_job(job_id: str, input_path: str, voice: str, model_size: str):
+def run_dubbing_job(job_id: str, input_path: str, voice: str, model_size: str, voice_sample_path: str = None):
     """Chạy ai.py trong tiến trình con, cập nhật trạng thái job khi có log mới."""
     with _jobs_lock:
         _jobs[job_id]["status"] = "running"
@@ -72,6 +72,8 @@ def run_dubbing_job(job_id: str, input_path: str, voice: str, model_size: str):
         "--model", model_size,
         "--output", output_path,
     ]
+    if voice_sample_path:
+        cmd += ["--voice_sample", voice_sample_path]
 
     try:
         proc = subprocess.Popen(
@@ -148,7 +150,10 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
                 return
             with _jobs_lock:
                 summary = [
-                    {"job_id": jid, "status": j["status"], "input_name": j.get("input_name", "")}
+                    {
+                        "job_id": jid, "status": j["status"], "input_name": j.get("input_name", ""),
+                        "voice_cloning": j.get("voice_cloning", False),
+                    }
                     for jid, j in _jobs.items()
                 ]
             self._send_json(200, sorted(summary, key=lambda x: x["job_id"], reverse=True))
@@ -233,7 +238,8 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
             boundary = content_type.split("boundary=")[-1].encode()
             body = self.rfile.read(content_length)
 
-            filename, file_data = None, None
+            # Parse mọi field file trong multipart, phân biệt theo name="..."
+            files_by_field = {}
             for part in body.split(b"--" + boundary):
                 if b"Content-Disposition" not in part:
                     continue
@@ -241,24 +247,34 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
                 if header_end == -1:
                     continue
                 headers_part = part[:header_end].decode(errors="ignore")
-                m = re.search(r'filename="([^"]+)"', headers_part)
-                if not m:
+                fname_m = re.search(r'filename="([^"]*)"', headers_part)
+                field_m = re.search(r'name="([^"]+)"', headers_part)
+                if not fname_m or not fname_m.group(1) or not field_m:
                     continue
-                filename = m.group(1)
-                file_data = part[header_end + 4:]
-                if file_data.endswith(b"\r\n"):
-                    file_data = file_data[:-2]
-                break
+                data = part[header_end + 4:]
+                if data.endswith(b"\r\n"):
+                    data = data[:-2]
+                files_by_field[field_m.group(1)] = (fname_m.group(1), data)
 
-            if not filename or file_data is None:
-                self._send_json(400, {"error": "Không tìm thấy file trong request"})
+            if "file" not in files_by_field:
+                self._send_json(400, {"error": "Không tìm thấy file video trong request (field 'file')"})
                 return
 
+            filename, file_data = files_by_field["file"]
             safe_name = safe_filename(filename)
             job_id = f"{int(time.time())}_{secrets.token_hex(4)}"
             input_path = UPLOAD_DIR / f"{job_id}_{safe_name}"
             with open(input_path, "wb") as f:
                 f.write(file_data)
+
+            voice_sample_path = None
+            if "voice_sample" in files_by_field:
+                vs_name, vs_data = files_by_field["voice_sample"]
+                if vs_data:  # người dùng có chọn file mẫu giọng (không phải input rỗng)
+                    vs_safe = safe_filename(vs_name)
+                    voice_sample_path = str(UPLOAD_DIR / f"{job_id}_voicesample_{vs_safe}")
+                    with open(voice_sample_path, "wb") as f:
+                        f.write(vs_data)
 
             voice = self.headers.get("X-Voice", "female")
             model_size = self.headers.get("X-Model", "small")
@@ -271,10 +287,13 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
                 _jobs[job_id] = {
                     "status": "queued", "progress": 0, "log": "",
                     "input_name": safe_name, "output_file": None, "error": None,
+                    "voice_cloning": voice_sample_path is not None,
                 }
 
             thread = threading.Thread(
-                target=run_dubbing_job, args=(job_id, str(input_path), voice, model_size), daemon=True,
+                target=run_dubbing_job,
+                args=(job_id, str(input_path), voice, model_size, voice_sample_path),
+                daemon=True,
             )
             thread.start()
 
