@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🔒 Đăng nhập - AI Dubbing Server</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  background: linear-gradient(135deg, #0a0e27 0%, #1a0a2e 50%, #0a0e27 100%);
+  color:#e0e6ff;
+  font-family:'Segoe UI',sans-serif;
+  min-height:100vh;
+  display:flex;align-items:center;justify-content:center;
+}
+.box{
+  background:rgba(26,31,58,0.9);border:1px solid #2a2f4a;
+  border-radius:20px;padding:40px;width:100%;max-width:380px;
+  box-shadow:0 20px 60px rgba(0,0,0,0.4);
+  text-align:center;
+}
+.box h1{font-size:1.6em;margin-bottom:10px}
+.box p{color:#8892b0;margin-bottom:25px;font-size:0.9em}
+input[type="password"]{
+  width:100%;padding:14px;background:rgba(0,0,0,0.3);
+  border:2px solid #2a2f4a;border-radius:10px;
+  color:#e0e6ff;font-size:1em;margin-bottom:15px;
+}
+input[type="password"]:focus{outline:none;border-color:#64ffda}
+button{
+  width:100%;padding:14px;border:none;border-radius:10px;
+  background:#7c4dff;color:white;font-size:1em;font-weight:600;
+  cursor:pointer;transition:all 0.2s;
+}
+button:hover{background:#6a3dea}
+button:disabled{opacity:0.6;cursor:not-allowed}
+.error{color:#ff5252;margin-top:12px;font-size:0.9em;min-height:1.2em}
+</style>
+</head>
+<body>
+<div class="box">
+  <h1>🔍 AI Dubbing Server</h1>
+  <p>Nhập mật khẩu để tiếp tục</p>
+  <input type="password" id="password" placeholder="Mật khẩu" autofocus
+         onkeypress="if(event.key==='Enter')login()">
+  <button id="loginBtn" onclick="login()">Đăng nhập</button>
+  <div class="error" id="errorMsg"></div>
+</div>
+
+<script>
+async function login() {
+  const password = document.getElementById('password').value;
+  const errorMsg = document.getElementById('errorMsg');
+  const btn = document.getElementById('loginBtn');
+  if (!password) {
+    errorMsg.textContent = 'Vui lòng nhập mật khẩu';
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = 'Đang kiểm tra...';
+  errorMsg.textContent = '';
+  try {
+    const res = await fetch('/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({password})
+    });
+    const data = await res.json();
+    if (res.ok && data.token) {
+      sessionStorage.setItem('dub_token', data.token);
+      sessionStorage.setItem('dub_expires', String(Date.now() + (data.expires_in || 0) * 1000));
+      window.location.href = '/dashboard.html';
+    } else {
+      errorMsg.textContent = data.error || 'Đăng nhập thất bại';
+    }
+  } catch (e) {
+    errorMsg.textContent = 'Lỗi kết nối: ' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Đăng nhập';
+  }
+}
+</script>
+</body>
+</html>

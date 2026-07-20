@@ -1,1 +1,98 @@
-??
+name: 🎬 AI Dubbing Server
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_hours:
+        description: 'Thời gian chạy (giờ)'
+        required: true
+        default: '3'
+        type: choice
+        options: ['1', '2', '3', '5']
+
+jobs:
+  dubbing-server:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    env:
+      WEB_PASSWORD: ${{ secrets.WEB_PASSWORD }}
+      WORK_DIR: ${{ github.workspace }}
+      PORT: 9999
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: ⛔ Kiểm tra mật khẩu
+        run: |
+          if [ -z "$WEB_PASSWORD" ]; then
+            echo "::error::Chưa cấu hình secret WEB_PASSWORD. Vào Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          echo "✅ WEB_PASSWORD đã cấu hình"
+
+      - name: 🔧 Cài FFmpeg + thư viện Python
+        run: |
+          set -e
+          sudo apt update -qq
+          sudo apt install -y -qq ffmpeg
+          ffmpeg -version | head -1
+          python3 -m pip install --upgrade pip -q
+          pip install --break-system-packages -q \
+            openai-whisper edge-tts transformers pydub torch \
+            sentencepiece sacremoses
+          echo "✅ Đã cài xong dependencies"
+
+      - name: 📦 Cài Cloudflared
+        run: |
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O cloudflared
+          chmod +x cloudflared
+          sudo mv cloudflared /usr/local/bin/cloudflared
+
+      - name: 🚀 Khởi động server
+        run: |
+          nohup python3 "${{ github.workspace }}/server.py" > /tmp/server.log 2>&1 &
+          echo $! > /tmp/server.pid
+          sleep 3
+          if ! curl -sf "http://localhost:${{ env.PORT }}/login.html" > /dev/null; then
+            echo "::error::Server không phản hồi"
+            cat /tmp/server.log
+            exit 1
+          fi
+          echo "✅ Server đang chạy tại port ${{ env.PORT }}"
+
+      - name: 🌍 Mở Cloudflare Tunnel
+        run: |
+          nohup cloudflared tunnel --url "http://localhost:${{ env.PORT }}" > /tmp/tunnel.log 2>&1 &
+          URL=""
+          for i in $(seq 1 20); do
+            sleep 3
+            URL=$(grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' /tmp/tunnel.log | head -1)
+            [ -n "$URL" ] && break
+          done
+          if [ -z "$URL" ]; then
+            echo "::error::Không lấy được link tunnel"
+            cat /tmp/tunnel.log
+            exit 1
+          fi
+          echo ""
+          echo "========================================="
+          echo "🔗 LINK: $URL"
+          echo "🔑 Mật khẩu: đã lưu trong GitHub Secret WEB_PASSWORD"
+          echo "========================================="
+          echo "⚠️  Máy chủ chạy trên CPU (không GPU) — model 'small' xử lý"
+          echo "    video vài phút có thể mất 5-15 phút tùy độ dài."
+
+      - name: ⏰ Giữ workflow chạy
+        run: |
+          HOURS="${{ github.event.inputs.run_hours }}"
+          MINUTES=$((HOURS * 60))
+          for i in $(seq 1 "$MINUTES"); do
+            sleep 60
+            if ! kill -0 "$(cat /tmp/server.pid)" 2>/dev/null; then
+              echo "::error::Server crash, dừng sớm"
+              cat /tmp/server.log
+              exit 1
+            fi
+            echo "⏰ Đã chạy: ${i} / ${MINUTES} phút"
+          done

@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🎬 AI Dubbing Server</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  background: linear-gradient(135deg, #0a0e27 0%, #1a0a2e 50%, #0a0e27 100%);
+  color:#e0e6ff;font-family:'Segoe UI',sans-serif;min-height:100vh;
+}
+.container{max-width:1000px;margin:0 auto;padding:20px}
+.header{
+  background:linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  padding:30px;border-radius:20px;margin-bottom:30px;
+  box-shadow:0 20px 60px rgba(102,126,234,0.3);text-align:center;position:relative;
+}
+.header h1{font-size:2em;text-shadow:2px 2px 4px rgba(0,0,0,0.3)}
+.header p{color:#e0e6ff;margin-top:5px;font-size:0.9em}
+.logout-btn{
+  position:absolute;top:20px;right:20px;background:rgba(255,255,255,0.2);
+  border:none;color:white;padding:8px 16px;border-radius:10px;cursor:pointer;
+}
+.card{
+  background:rgba(26,31,58,0.8);border:1px solid #2a2f4a;border-radius:15px;
+  padding:25px;margin-bottom:20px;backdrop-filter:blur(10px);
+}
+.card h2{color:#64ffda;margin-bottom:15px;font-size:1.2em}
+.upload-zone{
+  border:3px dashed #2a2f4a;border-radius:15px;padding:40px;text-align:center;
+  cursor:pointer;transition:all 0.3s;background:rgba(0,0,0,0.2);
+}
+.upload-zone:hover{border-color:#64ffda;background:rgba(100,255,218,0.05)}
+.upload-zone.dragover{border-color:#7c4dff;background:rgba(124,77,255,0.1)}
+select,input[type="text"]{
+  width:100%;padding:12px;background:rgba(0,0,0,0.3);border:2px solid #2a2f4a;
+  border-radius:10px;color:#e0e6ff;font-size:1em;margin-top:8px;
+}
+.form-row{display:flex;gap:15px;flex-wrap:wrap;margin-top:15px}
+.form-row > div{flex:1;min-width:150px}
+label{font-size:0.85em;color:#8892b0}
+.btn{
+  padding:12px 24px;border:none;border-radius:10px;font-size:1em;font-weight:600;
+  cursor:pointer;transition:all 0.3s;margin:5px 0;display:inline-flex;align-items:center;gap:8px;
+}
+.btn:hover{transform:scale(1.03)}
+.btn:disabled{opacity:0.5;cursor:not-allowed;transform:none}
+.btn-primary{background:#7c4dff;color:white}
+.btn-success{background:#69f0ae;color:#0a0e27}
+.job-item{
+  background:rgba(0,0,0,0.25);border-radius:12px;padding:15px;margin-bottom:12px;
+  border-left:4px solid #2a2f4a;
+}
+.job-item.running{border-left-color:#ffd740}
+.job-item.done{border-left-color:#69f0ae}
+.job-item.error{border-left-color:#ff5252}
+.job-item .top{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
+.job-item .name{font-weight:600}
+.job-status{font-size:0.85em;padding:4px 10px;border-radius:20px}
+.job-status.queued{background:rgba(136,146,176,0.2);color:#8892b0}
+.job-status.running{background:rgba(255,215,64,0.2);color:#ffd740}
+.job-status.done{background:rgba(105,240,174,0.2);color:#69f0ae}
+.job-status.error{background:rgba(255,82,82,0.2);color:#ff5252}
+.log-box{
+  background:#000;border-radius:8px;padding:10px;margin-top:10px;
+  font-family:'Courier New',monospace;font-size:0.8em;color:#8892b0;
+  max-height:150px;overflow-y:auto;white-space:pre-wrap;display:none;
+}
+.toast{
+  position:fixed;top:20px;right:20px;padding:15px 25px;border-radius:10px;
+  font-weight:600;z-index:1000;animation:slideIn 0.3s ease;
+}
+.toast.success{background:#69f0ae;color:#0a0e27}
+.toast.error{background:#ff5252;color:white}
+@keyframes slideIn{from{transform:translateX(400px)}to{transform:translateX(0)}}
+</style>
+</head>
+<body>
+<div class="container">
+
+<div class="header">
+  <button class="logout-btn" onclick="logout()">🚪 Đăng xuất</button>
+  <h1>🎬 AI Dubbing Server</h1>
+  <p>Upload video → Lồng tiếng Việt tự động bằng AI</p>
+</div>
+
+<div class="card">
+  <h2>📤 Upload video</h2>
+  <div class="upload-zone" id="uploadZone" onclick="document.getElementById('fileInput').click()">
+    <div style="font-size:3em">🎥</div>
+    <p>Kéo thả video vào đây hoặc Click để chọn</p>
+    <p style="color:#8892b0;font-size:0.85em">Hỗ trợ: .mp4, .mov, .mkv — tối đa 500MB</p>
+  </div>
+  <input type="file" id="fileInput" style="display:none" accept=".mp4,.mov,.mkv,.avi">
+
+  <div class="form-row">
+    <div>
+      <label>Giọng đọc</label>
+      <select id="voiceSelect">
+        <option value="female">Nữ (HoaiMy)</option>
+        <option value="male">Nam (NamMinh)</option>
+      </select>
+    </div>
+    <div>
+      <label>Model Whisper (độ chính xác)</label>
+      <select id="modelSelect">
+        <option value="tiny">tiny (nhanh nhất)</option>
+        <option value="base">base</option>
+        <option value="small" selected>small (khuyên dùng)</option>
+        <option value="medium">medium (chính xác hơn, chậm)</option>
+      </select>
+    </div>
+  </div>
+
+  <button class="btn btn-primary" id="uploadBtn" onclick="uploadVideo()" style="margin-top:15px" disabled>
+    🚀 Bắt đầu lồng tiếng
+  </button>
+  <div id="selectedFileName" style="color:#64ffda;margin-top:8px;font-size:0.9em"></div>
+</div>
+
+<div class="card">
+  <h2>📋 Danh sách job</h2>
+  <div id="jobList"><p style="color:#8892b0">Chưa có job nào.</p></div>
+</div>
+
+</div>
+
+<div id="toastContainer"></div>
+
+<script>
+const token = sessionStorage.getItem('dub_token');
+if (!token) window.location.href = '/login.html';
+
+function authHeaders(extra) {
+  return Object.assign({'Authorization': 'Bearer ' + token}, extra || {});
+}
+
+async function apiFetch(url, options = {}) {
+  options.headers = authHeaders(options.headers);
+  const res = await fetch(url, options);
+  if (res.status === 401) {
+    sessionStorage.removeItem('dub_token');
+    window.location.href = '/login.html';
+    throw new Error('Phiên đăng nhập hết hạn');
+  }
+  return res;
+}
+
+function logout() {
+  apiFetch('/logout', {method: 'POST'}).finally(() => {
+    sessionStorage.removeItem('dub_token');
+    window.location.href = '/login.html';
+  });
+}
+
+let selectedFile = null;
+const uploadZone = document.getElementById('uploadZone');
+const fileInput = document.getElementById('fileInput');
+const uploadBtn = document.getElementById('uploadBtn');
+
+uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('dragover'); });
+uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('dragover'));
+uploadZone.addEventListener('drop', e => {
+  e.preventDefault();
+  uploadZone.classList.remove('dragover');
+  if (e.dataTransfer.files.length) selectFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', e => {
+  if (e.target.files.length) selectFile(e.target.files[0]);
+});
+
+function selectFile(file) {
+  selectedFile = file;
+  document.getElementById('selectedFileName').textContent = `📄 ${file.name} (${formatSize(file.size)})`;
+  uploadBtn.disabled = false;
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024*1024) return (bytes/1024).toFixed(0) + ' KB';
+  return (bytes/(1024*1024)).toFixed(1) + ' MB';
+}
+
+async function uploadVideo() {
+  if (!selectedFile) return;
+  uploadBtn.disabled = true;
+  uploadBtn.textContent = '⏳ Đang upload...';
+
+  const formData = new FormData();
+  formData.append('file', selectedFile);
+
+  try {
+    const res = await apiFetch('/upload', {
+      method: 'POST',
+      headers: {
+        'X-Voice': document.getElementById('voiceSelect').value,
+        'X-Model': document.getElementById('modelSelect').value,
+      },
+      body: formData,
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast('Đã bắt đầu xử lý!', 'success');
+      selectedFile = null;
+      document.getElementById('selectedFileName').textContent = '';
+      refreshJobs();
+    } else {
+      showToast(data.error || 'Upload thất bại', 'error');
+    }
+  } catch (e) {
+    showToast('Lỗi: ' + e.message, 'error');
+  } finally {
+    uploadBtn.disabled = false;
+    uploadBtn.textContent = '🚀 Bắt đầu lồng tiếng';
+  }
+}
+
+const statusLabel = {queued: 'Đang chờ', running: 'Đang xử lý', done: 'Hoàn tất', error: 'Lỗi'};
+
+async function refreshJobs() {
+  const res = await apiFetch('/jobs');
+  const jobs = await res.json();
+  const list = document.getElementById('jobList');
+  if (!jobs.length) {
+    list.innerHTML = '<p style="color:#8892b0">Chưa có job nào.</p>';
+    return;
+  }
+  list.innerHTML = jobs.map(j => `
+    <div class="job-item ${j.status}" id="job-${j.job_id}">
+      <div class="top">
+        <span class="name">🎬 ${j.input_name}</span>
+        <span class="job-status ${j.status}">${statusLabel[j.status] || j.status}</span>
+      </div>
+      <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-primary" style="padding:6px 14px;font-size:0.85em" onclick="toggleLog('${j.job_id}')">📜 Xem log</button>
+        ${j.status === 'done' ? `<button class="btn btn-success" style="padding:6px 14px;font-size:0.85em" onclick="downloadResult('${j.job_id}')">⬇️ Tải video</button>` : ''}
+      </div>
+      <div class="log-box" id="log-${j.job_id}"></div>
+    </div>
+  `).join('');
+}
+
+async function toggleLog(jobId) {
+  const box = document.getElementById(`log-${jobId}`);
+  if (box.style.display === 'block') {
+    box.style.display = 'none';
+    return;
+  }
+  box.style.display = 'block';
+  const res = await apiFetch(`/status?job_id=${jobId}`);
+  const data = await res.json();
+  box.textContent = data.log || '(chưa có log)';
+  if (data.error) box.textContent += '\n\n❌ ' + data.error;
+}
+
+function downloadResult(jobId) {
+  apiFetch(`/download?job_id=${jobId}`).then(async r => {
+    if (!r.ok) {
+      const err = await r.json();
+      showToast(err.error || 'Tải thất bại', 'error');
+      return;
+    }
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${jobId}_vi.mp4`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    showToast('Đã tải video!', 'success');
+  });
+}
+
+function showToast(msg, type) {
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+  toast.textContent = msg;
+  document.getElementById('toastContainer').appendChild(toast);
+  setTimeout(() => toast.remove(), 3000);
+}
+
+refreshJobs();
+setInterval(refreshJobs, 5000);
+</script>
+</body>
+</html>
