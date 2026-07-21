@@ -229,6 +229,64 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
         if not self._require_auth():
             return
 
+        if parsed.path == "/pip_install":
+            content_length = int(self.headers.get("Content-Length", 0))
+            try:
+                data = json.loads(self.rfile.read(content_length) or b"{}")
+            except json.JSONDecodeError:
+                data = {}
+            package = data.get("package", "").strip()
+            # Chỉ cho phép tên package pip hợp lệ: chữ/số/._-[] — chặn mọi ký tự
+            # shell nguy hiểm (; | & ` $ () khoảng trắng...) để không thể chèn lệnh khác.
+            if not package or not re.match(r'^[A-Za-z0-9_.\-\[\]]{1,100}$', package):
+                self._send_json(400, {"error": "Tên package không hợp lệ (chỉ chữ/số/._-[])"})
+                return
+            try:
+                proc = subprocess.run(
+                    ["pip", "install", "--break-system-packages", package],
+                    capture_output=True, text=True, timeout=600,
+                )
+                self._send_json(200, {
+                    "success": proc.returncode == 0,
+                    "output": (proc.stdout + proc.stderr)[-6000:],
+                })
+            except subprocess.TimeoutExpired:
+                self._send_json(504, {"success": False, "error": "Cài đặt quá lâu (timeout 10 phút)"})
+            except Exception as e:
+                self._send_json(500, {"success": False, "error": str(e)})
+            return
+
+        if parsed.path == "/diag":
+            content_length = int(self.headers.get("Content-Length", 0))
+            try:
+                data = json.loads(self.rfile.read(content_length) or b"{}")
+            except json.JSONDecodeError:
+                data = {}
+            key = data.get("command", "")
+            diag_commands = {
+                "pip_list": ["pip", "list"],
+                "disk_space": ["df", "-h", "."],
+                "ffmpeg_version": ["ffmpeg", "-version"],
+                "python_version": ["python3", "--version"],
+                "gpu_check": ["python3", "-c", "import torch; print('CUDA:', torch.cuda.is_available())"],
+                "check_coqui": ["python3", "-c", "import TTS; print('TTS OK:', TTS.__file__)"],
+                "check_demucs": ["python3", "-c", "import demucs; print('demucs OK')"],
+                "server_log_tail": ["tail", "-n", "60", "/tmp/server.log"],
+            }
+            cmd = diag_commands.get(key)
+            if cmd is None:
+                self._send_json(400, {"error": f"Lệnh không hợp lệ. Cho phép: {sorted(diag_commands)}"})
+                return
+            try:
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                self._send_json(200, {
+                    "success": proc.returncode == 0,
+                    "output": (proc.stdout + proc.stderr)[-6000:],
+                })
+            except Exception as e:
+                self._send_json(500, {"success": False, "error": str(e)})
+            return
+
         if parsed.path == "/upload":
             try:
                 content_length = int(self.headers.get("Content-Length", 0))

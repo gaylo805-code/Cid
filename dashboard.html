@@ -142,6 +142,30 @@ label{font-size:0.85em;color:#8892b0}
   <div id="jobList"><p style="color:#8892b0">Chưa có job nào.</p></div>
 </div>
 
+<div class="card">
+  <h2>🛠️ Chẩn đoán & Cài đặt</h2>
+  <p style="color:#8892b0;font-size:0.85em;margin-bottom:12px">
+    Không phải dòng lệnh tự do — chỉ các lệnh kiểm tra cố định + cài package pip
+    (an toàn vì server chạy công khai trên Internet).
+  </p>
+  <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:15px">
+    <button class="btn btn-primary" style="padding:8px 14px;font-size:0.85em" onclick="runDiag('pip_list')">📦 pip list</button>
+    <button class="btn btn-primary" style="padding:8px 14px;font-size:0.85em" onclick="runDiag('check_coqui')">🎙️ Kiểm tra coqui-tts</button>
+    <button class="btn btn-primary" style="padding:8px 14px;font-size:0.85em" onclick="runDiag('check_demucs')">🎵 Kiểm tra demucs</button>
+    <button class="btn btn-primary" style="padding:8px 14px;font-size:0.85em" onclick="runDiag('gpu_check')">🖥️ Kiểm tra GPU</button>
+    <button class="btn btn-primary" style="padding:8px 14px;font-size:0.85em" onclick="runDiag('disk_space')">💽 Dung lượng đĩa</button>
+    <button class="btn btn-primary" style="padding:8px 14px;font-size:0.85em" onclick="runDiag('ffmpeg_version')">🎬 FFmpeg version</button>
+    <button class="btn btn-primary" style="padding:8px 14px;font-size:0.85em" onclick="runDiag('server_log_tail')">📜 Log server (60 dòng cuối)</button>
+  </div>
+
+  <div style="display:flex;gap:8px">
+    <input type="text" id="pipPackageInput" placeholder="Tên package (vd: coqui-tts)">
+    <button class="btn btn-success" onclick="installPackage()">➕ Cài đặt</button>
+  </div>
+
+  <div class="log-box" id="diagOutput" style="display:block;min-height:60px;margin-top:12px">Chưa chạy lệnh nào.</div>
+</div>
+
 </div>
 
 <div id="toastContainer"></div>
@@ -317,6 +341,44 @@ function showToast(msg, type) {
   toast.textContent = msg;
   document.getElementById('toastContainer').appendChild(toast);
   setTimeout(() => toast.remove(), 3000);
+}
+
+async function runDiag(command) {
+  const box = document.getElementById('diagOutput');
+  box.textContent = `⏳ Đang chạy: ${command}...`;
+  try {
+    const res = await apiFetch('/diag', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({command}),
+    });
+    const data = await res.json();
+    box.textContent = res.ok ? (data.output || '(không có output)') : (data.error || 'Lỗi không xác định');
+  } catch (e) {
+    box.textContent = '❌ Lỗi: ' + e.message;
+  }
+}
+
+async function installPackage() {
+  const pkg = document.getElementById('pipPackageInput').value.trim();
+  if (!pkg) {
+    showToast('Nhập tên package trước', 'error');
+    return;
+  }
+  const box = document.getElementById('diagOutput');
+  box.textContent = `⏳ Đang cài đặt ${pkg}... (có thể mất vài phút)`;
+  try {
+    const res = await apiFetch('/pip_install', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({package: pkg}),
+    });
+    const data = await res.json();
+    box.textContent = data.output || data.error || '(không có output)';
+    showToast(data.success ? `Đã cài ${pkg}` : `Cài ${pkg} thất bại`, data.success ? 'success' : 'error');
+  } catch (e) {
+    box.textContent = '❌ Lỗi: ' + e.message;
+  }
 }
 
 refreshJobs();
