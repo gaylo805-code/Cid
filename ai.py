@@ -255,27 +255,52 @@ def translate_text(segments: List[Dict], src_lang: str, target_lang: str = "vi")
 # BƯỚC 4 — TẠO GIỌNG AI TIẾNG VIỆT (MICROSOFT EDGE TTS)
 # ─────────────────────────────────────────────────────────────────────────────
 
-_xtts_model = None  # cache model để không tải lại mỗi lần gọi
+_xtts_model = None  # cache (model, config) để không tải lại mỗi lần gọi
+VIXTTS_DIR = os.path.join(os.path.expanduser("~"), ".cache", "vixtts_model")
 
 
 def _get_xtts_model():
-    """Tải model XTTS-v2 (chỉ 1 lần, dùng lại cho toàn bộ pipeline).
+    """Tải model viXTTS (chỉ 1 lần, dùng lại cho toàn bộ pipeline).
 
-    ⚠️ Model XTTS-v2 dùng giấy phép Coqui Public Model License (CPML) —
-    CHỈ cho phép sử dụng phi thương mại (cá nhân/nghiên cứu/hobby).
-    Xem: https://coqui.ai/cpml
+    ⚠️ QUAN TRỌNG: model XTTS-v2 GỐC của Coqui KHÔNG hỗ trợ tiếng Việt
+    (chỉ 17 ngôn ngữ: en/es/fr/de/it/pt/pl/tr/ru/nl/cs/ar/zh-cn/ja/hu/ko/hi).
+    Dùng "capleaf/viXTTS" — bản fine-tune cộng đồng có thêm tiếng Việt
+    (18 ngôn ngữ, mở rộng tokenizer + train trên dữ liệu viVoice).
+    Nguồn: https://huggingface.co/capleaf/viXTTS
+
+    ⚠️ Giấy phép: kế thừa Coqui Public Model License (CPML) — CHỈ dùng phi
+    thương mại (cá nhân/nghiên cứu/hobby). Xem: https://coqui.ai/cpml
     """
     global _xtts_model
     if _xtts_model is None:
         # Tự động chấp nhận CPML để không bị treo chờ nhập "y" trên server
-        # không tương tác (điều này KHÔNG thay đổi nội dung giấy phép, chỉ
-        # ghi nhận rằng bạn đã đọc và đồng ý với CPML trước khi model tải).
+        # không tương tác (KHÔNG thay đổi nội dung giấy phép, chỉ ghi nhận
+        # rằng bạn đã đọc và đồng ý với CPML trước khi model tải).
         os.environ["COQUI_TOS_AGREED"] = "1"
+
         import torch
-        from TTS.api import TTS
+        from huggingface_hub import snapshot_download, hf_hub_download
+        from TTS.tts.configs.xtts_config import XttsConfig
+        from TTS.tts.models.xtts import Xtts
+
+        os.makedirs(VIXTTS_DIR, exist_ok=True)
+        required_files = ["model.pth", "config.json", "vocab.json", "speakers_xtts.pth"]
+        have = os.listdir(VIXTTS_DIR) if os.path.isdir(VIXTTS_DIR) else []
+
+        if not all(f in have for f in required_files):
+            logger.info("  Đang tải model viXTTS (tiếng Việt) từ Hugging Face — lần đầu sẽ hơi lâu…")
+            snapshot_download(repo_id="capleaf/viXTTS", repo_type="model", local_dir=VIXTTS_DIR)
+            hf_hub_download(repo_id="coqui/XTTS-v2", filename="speakers_xtts.pth", local_dir=VIXTTS_DIR)
+
+        config = XttsConfig()
+        config.load_json(os.path.join(VIXTTS_DIR, "config.json"))
+        model = Xtts.init_from_config(config)
+        model.load_checkpoint(config, checkpoint_dir=VIXTTS_DIR, eval=True, use_deepspeed=False)
+
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        logger.info(f"  Đang tải model XTTS-v2 trên {device.upper()} (lần đầu sẽ hơi lâu)…")
-        _xtts_model = TTS("tts_models/multilingual/multi-dataset/xtts_v2").to(device)
+        model.to(device)
+        logger.info(f"  Model viXTTS đã sẵn sàng trên {device.upper()}.")
+        _xtts_model = (model, config)
     return _xtts_model
 
 
@@ -305,8 +330,13 @@ def generate_tts(
     use_cloning = bool(voice_sample) and os.path.isfile(voice_sample)
 
     if use_cloning:
-        logger.info(f"  Chế độ: NHÂN BẢN GIỌNG NÓI từ file mẫu: {voice_sample}")
-        xtts = _get_xtts_model()
+        logger.info(f"  Chế độ: NHÂN BẢN GIỌNG NÓI (viXTTS) từ file mẫu: {voice_sample}")
+        vixtts_model, vixtts_config = _get_xtts_model()
+        # Tính "conditioning latents" 1 lần từ file mẫu, dùng lại cho mọi đoạn
+        # (nhanh hơn nhiều so với tính lại từ đầu mỗi đoạn văn bản).
+        gpt_cond_latent, speaker_embedding = vixtts_model.get_conditioning_latents(
+            audio_path=voice_sample, gpt_cond_len=30,
+        )
     else:
         import edge_tts
         voice_name = GIONG_VIET.get(voice, GIONG_VIET["female"])
@@ -330,12 +360,14 @@ def generate_tts(
 
         try:
             if use_cloning:
-                xtts.tts_to_file(
+                import soundfile as sf
+                out = vixtts_model.inference(
                     text=seg["text"],
-                    speaker_wav=voice_sample,
                     language="vi",
-                    file_path=wav_path,
+                    gpt_cond_latent=gpt_cond_latent,
+                    speaker_embedding=speaker_embedding,
                 )
+                sf.write(wav_path, out["wav"], samplerate=24000)
                 audio = PydubAudio.from_wav(wav_path)
             else:
                 mp3_path = os.path.join(tts_dir, f"doan_{idx:04d}.mp3")
@@ -629,6 +661,8 @@ def check_dependencies(need_voice_cloning: bool = False) -> None:
     }
     if need_voice_cloning:
         required["TTS"] = "coqui-tts"
+        required["huggingface_hub"] = "huggingface_hub"
+        required["soundfile"] = "soundfile"
 
     missing = []
     for module, pip_name in required.items():
