@@ -495,10 +495,15 @@ def assemble_audio(
     aligned_paths: List[str],
     original_audio_path: str,
     temp_dir: str,
+    background_path: Optional[str] = None,
 ) -> str:
     """
     Ghép từng đoạn đã căn chỉnh vào đúng vị trí timestamp trên track audio.
-    Dùng canvas im lặng dài bằng video gốc, overlay từng đoạn lên trên.
+
+    Nếu có `background_path` (nhạc nền đã tách ra từ audio gốc, không còn
+    giọng nói): dùng nó làm nền thay vì im lặng, để giữ nhạc/hiệu ứng âm
+    thanh gốc trong video lồng tiếng. Nền được giảm nhẹ âm lượng để giọng
+    TTS nổi bật, không bị lấn át.
     """
     from pydub import AudioSegment as PydubAudio
 
@@ -507,7 +512,18 @@ def assemble_audio(
     original = PydubAudio.from_wav(original_audio_path)
     total_ms = len(original)
 
-    full_track = PydubAudio.silent(duration=total_ms)
+    if background_path and os.path.isfile(background_path):
+        logger.info("  Dùng nhạc nền đã tách (giữ âm thanh gốc, trừ giọng nói).")
+        full_track = PydubAudio.from_wav(background_path)
+        # Giảm nhẹ âm lượng nền để giọng lồng tiếng nổi bật, dễ nghe hơn.
+        full_track = full_track - 4  # -4 dB
+        if len(full_track) < total_ms:
+            full_track = full_track + PydubAudio.silent(duration=total_ms - len(full_track))
+        elif len(full_track) > total_ms:
+            full_track = full_track[:total_ms]
+    else:
+        logger.info("  Không có nhạc nền tách sẵn — dùng nền im lặng.")
+        full_track = PydubAudio.silent(duration=total_ms)
 
     for seg, aligned_path in zip(segments, aligned_paths):
         start_ms = int(seg["start"] * 1000)
@@ -540,6 +556,52 @@ def assemble_audio(
 # ─────────────────────────────────────────────────────────────────────────────
 # BƯỚC 7 — GHÉP AUDIO VÀO VIDEO
 # ─────────────────────────────────────────────────────────────────────────────
+
+def separate_vocals_background(audio_path: str, temp_dir: str) -> Optional[str]:
+    """
+    Tách audio gốc thành 2 phần: giọng nói (vocals) và phần còn lại (nhạc nền,
+    hiệu ứng âm thanh...) bằng Demucs (mô hình tách nguồn âm thanh).
+
+    Trả về đường dẫn file nhạc nền (KHÔNG có giọng nói gốc), hoặc None nếu
+    tách thất bại (khi đó pipeline sẽ dùng nền im lặng như trước, không crash).
+
+    Dùng chế độ --two-stems=vocals: nhanh hơn nhiều so với tách đủ 4 track
+    (vocals/drums/bass/other), và ta chỉ cần "vocals" với "phần còn lại".
+    """
+    out_dir = os.path.join(temp_dir, "demucs_out")
+    os.makedirs(out_dir, exist_ok=True)
+
+    logger.info("  Đang tách giọng nói khỏi nhạc nền bằng Demucs (có thể mất vài phút)…")
+    cmd = [
+        "python3", "-m", "demucs",
+        "--two-stems", "vocals",
+        "-o", out_dir,
+        "-n", "htdemucs",
+        audio_path,
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+    except subprocess.TimeoutExpired:
+        logger.warning("  Tách nhạc nền quá thời gian (30 phút) — dùng nền im lặng thay thế.")
+        return None
+
+    if proc.returncode != 0:
+        logger.warning(
+            f"  Tách nhạc nền thất bại, sẽ dùng nền im lặng thay thế. Lỗi:\n{proc.stderr[-1500:]}"
+        )
+        return None
+
+    # Demucs xuất ra: {out_dir}/htdemucs/{tên_file_không_đuôi}/no_vocals.wav
+    stem = Path(audio_path).stem
+    background_path = os.path.join(out_dir, "htdemucs", stem, "no_vocals.wav")
+
+    if not os.path.isfile(background_path):
+        logger.warning("  Không tìm thấy file nhạc nền sau khi tách — dùng nền im lặng thay thế.")
+        return None
+
+    logger.info(f"  Đã tách xong nhạc nền: {background_path}")
+    return background_path
+
 
 def merge_video(video_path: str, audio_path: str, output_path: str) -> str:
     """
@@ -641,9 +703,10 @@ def preprocess_segments(
 # TIỆN ÍCH — KIỂM TRA DEPENDENCIES
 # ─────────────────────────────────────────────────────────────────────────────
 
-def check_dependencies(need_voice_cloning: bool = False) -> None:
+def check_dependencies(need_voice_cloning: bool = False, need_background: bool = True) -> None:
     """Kiểm tra FFmpeg và toàn bộ thư viện Python cần thiết.
-    Nếu need_voice_cloning=True, kiểm tra thêm package 'TTS' (Coqui, dùng cho XTTS-v2)."""
+    Nếu need_voice_cloning=True, kiểm tra thêm package 'TTS' (Coqui, dùng cho viXTTS).
+    Nếu need_background=True, kiểm tra thêm package 'demucs' (tách nhạc nền)."""
     if subprocess.run(["ffmpeg", "-version"], capture_output=True).returncode != 0:
         raise RuntimeError(
             "Không tìm thấy FFmpeg.\n"
@@ -663,6 +726,9 @@ def check_dependencies(need_voice_cloning: bool = False) -> None:
         required["TTS"] = "coqui-tts"
         required["huggingface_hub"] = "huggingface_hub"
         required["soundfile"] = "soundfile"
+
+    if need_background:
+        required["demucs"] = "demucs"
 
     missing = []
     for module, pip_name in required.items():
@@ -692,6 +758,7 @@ def run_pipeline(
     output_path: Optional[str] = None,
     keep_temp: bool = False,
     voice_sample: Optional[str] = None,
+    keep_background: bool = True,
 ) -> str:
     """Điều phối toàn bộ pipeline lồng tiếng từ đầu đến cuối."""
     wall_start = time.time()
@@ -715,6 +782,11 @@ def run_pipeline(
     try:
         _banner(1, "Tách audio từ video")
         audio_path = extract_audio(input_video, temp_dir)
+
+        background_path = None
+        if keep_background:
+            _banner("1b", "Tách giọng nói khỏi nhạc nền (giữ âm thanh gốc)")
+            background_path = separate_vocals_background(audio_path, temp_dir)
 
         _banner(2, f"Phiên âm bằng Whisper ({model_size})")
         segments, detected_lang = transcribe(audio_path, model_size)
@@ -745,7 +817,7 @@ def run_pipeline(
             aligned_paths.append(adjust_speed(seg, temp_dir, idx))
 
         _banner(6, "Ghép toàn bộ track audio")
-        assembled = assemble_audio(segments, aligned_paths, audio_path, temp_dir)
+        assembled = assemble_audio(segments, aligned_paths, audio_path, temp_dir, background_path=background_path)
 
         _banner(7, "Ghép audio vào video cuối cùng")
         merge_video(input_video, assembled, output_path)
@@ -803,6 +875,11 @@ Ví dụ:
              "⚠️ Chỉ dùng giọng của chính bạn hoặc người đã đồng ý.",
     )
     parser.add_argument(
+        "--no_background", action="store_true",
+        help="Không giữ nhạc nền/hiệu ứng âm thanh gốc — dùng nền im lặng như trước (nhanh hơn, "
+             "bỏ qua bước tách bằng Demucs).",
+    )
+    parser.add_argument(
         "--model",
         choices=["tiny", "base", "small", "medium", "large"],
         default="small",
@@ -816,7 +893,7 @@ Ví dụ:
 
     if not args.skip_dep_check:
         try:
-            check_dependencies(need_voice_cloning=bool(args.voice_sample))
+            check_dependencies(need_voice_cloning=bool(args.voice_sample), need_background=not args.no_background)
         except (RuntimeError, FileNotFoundError) as exc:
             logger.error(f"Kiểm tra dependency thất bại:\n{exc}")
             sys.exit(1)
@@ -830,6 +907,7 @@ Ví dụ:
             output_path=args.output,
             keep_temp=args.keep_temp,
             voice_sample=args.voice_sample,
+            keep_background=not args.no_background,
         )
     except FileNotFoundError as exc:
         logger.error(str(exc))

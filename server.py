@@ -59,7 +59,10 @@ def safe_filename(name: str) -> str:
     return name or f"file_{int(time.time())}"
 
 
-def run_dubbing_job(job_id: str, input_path: str, voice: str, model_size: str, voice_sample_path: str = None):
+def run_dubbing_job(
+    job_id: str, input_path: str, voice: str, model_size: str,
+    voice_sample_path: str = None, keep_background: bool = True,
+):
     """Chạy ai.py trong tiến trình con, cập nhật trạng thái job khi có log mới."""
     with _jobs_lock:
         _jobs[job_id]["status"] = "running"
@@ -74,6 +77,8 @@ def run_dubbing_job(job_id: str, input_path: str, voice: str, model_size: str, v
     ]
     if voice_sample_path:
         cmd += ["--voice_sample", voice_sample_path]
+    if not keep_background:
+        cmd += ["--no_background"]
 
     try:
         proc = subprocess.Popen(
@@ -282,6 +287,7 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
                 voice = "female"
             if model_size not in ("tiny", "base", "small", "medium", "large"):
                 model_size = "small"
+            keep_background = self.headers.get("X-Keep-Background", "1") != "0"
 
             with _jobs_lock:
                 _jobs[job_id] = {
@@ -292,7 +298,7 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
 
             thread = threading.Thread(
                 target=run_dubbing_job,
-                args=(job_id, str(input_path), voice, model_size, voice_sample_path),
+                args=(job_id, str(input_path), voice, model_size, voice_sample_path, keep_background),
                 daemon=True,
             )
             thread.start()

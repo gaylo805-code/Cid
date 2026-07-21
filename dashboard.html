@@ -123,6 +123,14 @@ label{font-size:0.85em;color:#8892b0}
     </p>
   </div>
 
+  <div style="margin-top:15px;display:flex;align-items:center;gap:8px">
+    <input type="checkbox" id="keepBackgroundCheck" checked style="width:18px;height:18px">
+    <label for="keepBackgroundCheck" style="cursor:pointer">
+      🎵 Giữ âm thanh nền gốc (nhạc/hiệu ứng) — tách bằng AI, chỉ thay giọng nói
+      <span style="color:#8892b0;font-size:0.8em">(tắt để xử lý nhanh hơn, video sẽ chỉ có giọng mới trên nền im lặng)</span>
+    </label>
+  </div>
+
   <button class="btn btn-primary" id="uploadBtn" onclick="uploadVideo()" style="margin-top:15px" disabled>
     🚀 Bắt đầu lồng tiếng
   </button>
@@ -224,6 +232,7 @@ async function uploadVideo() {
         // Khi nhân bản giọng, X-Voice không dùng tới nhưng vẫn gửi giá trị hợp lệ mặc định
         'X-Voice': isClone ? 'female' : voiceChoice,
         'X-Model': document.getElementById('modelSelect').value,
+        'X-Keep-Background': document.getElementById('keepBackgroundCheck').checked ? '1' : '0',
       },
       body: formData,
     });
