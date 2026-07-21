@@ -230,80 +230,90 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         if parsed.path == "/upload":
-            content_length = int(self.headers.get("Content-Length", 0))
-            if content_length > 500 * 1024 * 1024:  # giới hạn 500MB
-                self._send_json(413, {"error": "File quá lớn (giới hạn 500MB)"})
-                return
+            try:
+                content_length = int(self.headers.get("Content-Length", 0))
+                if content_length > 500 * 1024 * 1024:  # giới hạn 500MB
+                    self._send_json(413, {"error": "File quá lớn (giới hạn 500MB)"})
+                    return
 
-            content_type = self.headers.get("Content-Type", "")
-            if "multipart/form-data" not in content_type:
-                self._send_json(400, {"error": "Cần gửi dạng multipart/form-data"})
-                return
+                content_type = self.headers.get("Content-Type", "")
+                if "multipart/form-data" not in content_type:
+                    self._send_json(400, {"error": "Cần gửi dạng multipart/form-data"})
+                    return
 
-            boundary = content_type.split("boundary=")[-1].encode()
-            body = self.rfile.read(content_length)
+                boundary = content_type.split("boundary=")[-1].encode()
+                body = self.rfile.read(content_length)
 
-            # Parse mọi field file trong multipart, phân biệt theo name="..."
-            files_by_field = {}
-            for part in body.split(b"--" + boundary):
-                if b"Content-Disposition" not in part:
-                    continue
-                header_end = part.find(b"\r\n\r\n")
-                if header_end == -1:
-                    continue
-                headers_part = part[:header_end].decode(errors="ignore")
-                fname_m = re.search(r'filename="([^"]*)"', headers_part)
-                field_m = re.search(r'name="([^"]+)"', headers_part)
-                if not fname_m or not fname_m.group(1) or not field_m:
-                    continue
-                data = part[header_end + 4:]
-                if data.endswith(b"\r\n"):
-                    data = data[:-2]
-                files_by_field[field_m.group(1)] = (fname_m.group(1), data)
+                # Parse mọi field file trong multipart, phân biệt theo name="..."
+                files_by_field = {}
+                for part in body.split(b"--" + boundary):
+                    if b"Content-Disposition" not in part:
+                        continue
+                    header_end = part.find(b"\r\n\r\n")
+                    if header_end == -1:
+                        continue
+                    headers_part = part[:header_end].decode(errors="ignore")
+                    fname_m = re.search(r'filename="([^"]*)"', headers_part)
+                    field_m = re.search(r'name="([^"]+)"', headers_part)
+                    if not fname_m or not fname_m.group(1) or not field_m:
+                        continue
+                    data = part[header_end + 4:]
+                    if data.endswith(b"\r\n"):
+                        data = data[:-2]
+                    files_by_field[field_m.group(1)] = (fname_m.group(1), data)
 
-            if "file" not in files_by_field:
-                self._send_json(400, {"error": "Không tìm thấy file video trong request (field 'file')"})
-                return
+                if "file" not in files_by_field:
+                    self._send_json(400, {"error": "Không tìm thấy file video trong request (field 'file')"})
+                    return
 
-            filename, file_data = files_by_field["file"]
-            safe_name = safe_filename(filename)
-            job_id = f"{int(time.time())}_{secrets.token_hex(4)}"
-            input_path = UPLOAD_DIR / f"{job_id}_{safe_name}"
-            with open(input_path, "wb") as f:
-                f.write(file_data)
+                filename, file_data = files_by_field["file"]
+                safe_name = safe_filename(filename)
+                job_id = f"{int(time.time())}_{secrets.token_hex(4)}"
+                input_path = UPLOAD_DIR / f"{job_id}_{safe_name}"
+                with open(input_path, "wb") as f:
+                    f.write(file_data)
 
-            voice_sample_path = None
-            if "voice_sample" in files_by_field:
-                vs_name, vs_data = files_by_field["voice_sample"]
-                if vs_data:  # người dùng có chọn file mẫu giọng (không phải input rỗng)
-                    vs_safe = safe_filename(vs_name)
-                    voice_sample_path = str(UPLOAD_DIR / f"{job_id}_voicesample_{vs_safe}")
-                    with open(voice_sample_path, "wb") as f:
-                        f.write(vs_data)
+                voice_sample_path = None
+                if "voice_sample" in files_by_field:
+                    vs_name, vs_data = files_by_field["voice_sample"]
+                    if vs_data:  # người dùng có chọn file mẫu giọng (không phải input rỗng)
+                        vs_safe = safe_filename(vs_name)
+                        voice_sample_path = str(UPLOAD_DIR / f"{job_id}_voicesample_{vs_safe}")
+                        with open(voice_sample_path, "wb") as f:
+                            f.write(vs_data)
 
-            voice = self.headers.get("X-Voice", "female")
-            model_size = self.headers.get("X-Model", "small")
-            if voice not in ("female", "male"):
-                voice = "female"
-            if model_size not in ("tiny", "base", "small", "medium", "large"):
-                model_size = "small"
-            keep_background = self.headers.get("X-Keep-Background", "1") != "0"
+                voice = self.headers.get("X-Voice", "female")
+                model_size = self.headers.get("X-Model", "small")
+                if voice not in ("female", "male"):
+                    voice = "female"
+                if model_size not in ("tiny", "base", "small", "medium", "large"):
+                    model_size = "small"
+                keep_background = self.headers.get("X-Keep-Background", "1") != "0"
 
-            with _jobs_lock:
-                _jobs[job_id] = {
-                    "status": "queued", "progress": 0, "log": "",
-                    "input_name": safe_name, "output_file": None, "error": None,
-                    "voice_cloning": voice_sample_path is not None,
-                }
+                with _jobs_lock:
+                    _jobs[job_id] = {
+                        "status": "queued", "progress": 0, "log": "",
+                        "input_name": safe_name, "output_file": None, "error": None,
+                        "voice_cloning": voice_sample_path is not None,
+                    }
 
-            thread = threading.Thread(
-                target=run_dubbing_job,
-                args=(job_id, str(input_path), voice, model_size, voice_sample_path, keep_background),
-                daemon=True,
-            )
-            thread.start()
+                thread = threading.Thread(
+                    target=run_dubbing_job,
+                    args=(job_id, str(input_path), voice, model_size, voice_sample_path, keep_background),
+                    daemon=True,
+                )
+                thread.start()
 
-            self._send_json(200, {"job_id": job_id, "message": "Đã bắt đầu xử lý"})
+                self._send_json(200, {"job_id": job_id, "message": "Đã bắt đầu xử lý"})
+            except Exception as e:
+                import traceback
+                print(f"❌ LỖI /upload: {e}", flush=True)
+                traceback.print_exc()
+                try:
+                    self._send_json(500, {"error": f"Lỗi server khi upload: {e}"})
+                except Exception:
+                    pass  # nếu kết nối đã đứt, không gửi được response nữa — bỏ qua
+            return
             return
 
         self._send_json(404, {"error": "Không tìm thấy endpoint"})
