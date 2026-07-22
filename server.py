@@ -238,8 +238,16 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
             package = data.get("package", "").strip()
             # Chỉ cho phép tên package pip hợp lệ: chữ/số/._-[] — chặn mọi ký tự
             # shell nguy hiểm (; | & ` $ () khoảng trắng...) để không thể chèn lệnh khác.
-            if not package or not re.match(r'^[A-Za-z0-9_.\-\[\]]{1,100}$', package):
-                self._send_json(400, {"error": "Tên package không hợp lệ (chỉ chữ/số/._-[])"})
+            # Mở rộng cho phép cú pháp version pip đầy đủ: ==, >=, <=, ~=, !=, dấu phẩy
+            # (nhiều điều kiện version), khoảng trắng. An toàn vì lệnh chạy qua
+            # subprocess dạng list KHÔNG shell=True — package luôn là 1 argv token
+            # duy nhất, không thể tách thành lệnh/flag khác dù chứa ký tự gì.
+            # Regex chỉ để chặn rác/input quá dài, không phải lớp chống injection chính.
+            if not package or not re.match(r'^[A-Za-z0-9_.\-\[\], <>=!~]{1,150}$', package):
+                self._send_json(400, {
+                    "error": "Tên package không hợp lệ. Ví dụ hợp lệ: coqui-tts, "
+                             "numpy==1.26.4, torch>=2.0,<2.3, package[extra]==1.0"
+                })
                 return
             try:
                 proc = subprocess.run(
@@ -252,6 +260,34 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
                 })
             except subprocess.TimeoutExpired:
                 self._send_json(504, {"success": False, "error": "Cài đặt quá lâu (timeout 10 phút)"})
+            except Exception as e:
+                self._send_json(500, {"success": False, "error": str(e)})
+            return
+
+        if parsed.path == "/apt_install":
+            content_length = int(self.headers.get("Content-Length", 0))
+            try:
+                data = json.loads(self.rfile.read(content_length) or b"{}")
+            except json.JSONDecodeError:
+                data = {}
+            package = data.get("package", "").strip()
+            # Tên package apt hợp lệ: chữ thường/số/.+- (theo chuẩn Debian package naming)
+            if not package or not re.match(r'^[a-z0-9][a-z0-9.+\-]{0,100}$', package):
+                self._send_json(400, {
+                    "error": "Tên package apt không hợp lệ. Ví dụ: libsndfile1, libgl1"
+                })
+                return
+            try:
+                proc = subprocess.run(
+                    ["sudo", "apt-get", "install", "-y", package],
+                    capture_output=True, text=True, timeout=300,
+                )
+                self._send_json(200, {
+                    "success": proc.returncode == 0,
+                    "output": (proc.stdout + proc.stderr)[-6000:],
+                })
+            except subprocess.TimeoutExpired:
+                self._send_json(504, {"success": False, "error": "Cài đặt quá lâu (timeout 5 phút)"})
             except Exception as e:
                 self._send_json(500, {"success": False, "error": str(e)})
             return

@@ -159,8 +159,12 @@ label{font-size:0.85em;color:#8892b0}
   </div>
 
   <div style="display:flex;gap:8px">
-    <input type="text" id="pipPackageInput" placeholder="Tên package (vd: coqui-tts)">
-    <button class="btn btn-success" onclick="installPackage()">➕ Cài đặt</button>
+    <input type="text" id="pipPackageInput" placeholder="vd: coqui-tts==0.24.1 hoặc torch>=2.0,<2.3">
+    <button class="btn btn-success" onclick="installPackage()">➕ pip install</button>
+  </div>
+  <div style="display:flex;gap:8px;margin-top:10px">
+    <input type="text" id="aptPackageInput" placeholder="vd: libsndfile1 (thư viện hệ thống, cần sudo)">
+    <button class="btn btn-success" onclick="installAptPackage()">➕ apt install</button>
   </div>
 
   <div class="log-box" id="diagOutput" style="display:block;min-height:60px;margin-top:12px">Chưa chạy lệnh nào.</div>
@@ -369,6 +373,28 @@ async function installPackage() {
   box.textContent = `⏳ Đang cài đặt ${pkg}... (có thể mất vài phút)`;
   try {
     const res = await apiFetch('/pip_install', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({package: pkg}),
+    });
+    const data = await res.json();
+    box.textContent = data.output || data.error || '(không có output)';
+    showToast(data.success ? `Đã cài ${pkg}` : `Cài ${pkg} thất bại`, data.success ? 'success' : 'error');
+  } catch (e) {
+    box.textContent = '❌ Lỗi: ' + e.message;
+  }
+}
+
+async function installAptPackage() {
+  const pkg = document.getElementById('aptPackageInput').value.trim();
+  if (!pkg) {
+    showToast('Nhập tên package trước', 'error');
+    return;
+  }
+  const box = document.getElementById('diagOutput');
+  box.textContent = `⏳ Đang cài đặt (apt) ${pkg}...`;
+  try {
+    const res = await apiFetch('/apt_install', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({package: pkg}),
